@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>B站视频 AI 总结</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <div class="header-row">
+      <div>
+        <h1>📺 B站视频 AI 总结</h1>
+        <p class="subtitle">输入 B站视频链接，AI 自动提取内容并生成 Markdown 笔记</p>
+      </div>
+      <button id="historyBtn" class="btn-ghost history-nav-btn" title="历史记录">📋 历史记录</button>
+    </div>
+  </header>
+
+  <section class="input-section">
+    <div class="form-row">
+      <label>🎬 视频链接</label>
+      <input type="url" id="videoUrl" placeholder="https://www.bilibili.com/video/BV1xx4x1x7xx/" autocomplete="url">
+    </div>
+
+    <div class="form-row">
+      <label>🔑 DeepSeek API Key</label>
+      <div class="key-row">
+        <input type="password" id="apiKey" placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off">
+        <button type="button" id="toggleKey" title="显示/隐藏">👁️</button>
+      </div>
+      <span class="hint">从 <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a> 获取</span>
+    </div>
+
+    <button id="startBtn" class="btn-primary">🚀 开始提取总结</button>
+  </section>
+
+  <section id="progressSection" class="progress-section" style="display:none;">
+    <div class="steps">
+      <div class="step" id="step1"><span class="step-icon">1</span><span class="step-label">获取字幕</span></div>
+      <div class="step-connector"></div>
+      <div class="step" id="step2"><span class="step-icon">2</span><span class="step-label">AI 总结</span></div>
+      <div class="step-connector"></div>
+      <div class="step" id="step3"><span class="step-icon">3</span><span class="step-label">完成</span></div>
+    </div>
+    <p id="progressMsg" class="progress-msg"></p>
+  </section>
+
+  <section id="errorSection" class="error-section" style="display:none;"><p id="errorMsg"></p></section>
+
+  <section id="infoSection" class="info-section" style="display:none;">
+    <h3 id="videoTitle"></h3><span id="subtitleInfo"></span>
+  </section>
+
+  <section id="resultSection" class="result-section" style="display:none;">
+    <div class="tabs">
+      <button class="tab active" data-tab="preview">👁️ 预览</button>
+      <button class="tab" data-tab="source">📝 Markdown 源码</button>
+    </div>
+    <div id="previewPanel" class="tab-panel active"><div id="markdownPreview" class="markdown-body"></div></div>
+    <div id="sourcePanel" class="tab-panel"><textarea id="markdownSource" readonly></textarea></div>
+    <div class="action-bar">
+      <button id="downloadBtn" class="btn-primary">💾 下载 .md 文件</button>
+      <button id="copyBtn" class="btn-secondary">📋 复制 Markdown</button>
+      <button id="resetBtn" class="btn-ghost">🔄 重新开始</button>
+    </div>
+  </section>
+
+  <section id="historySection" class="result-section" style="display:none;">
+    <div class="history-header">
+      <h2>📋 历史记录</h2>
+      <div>
+        <button id="reverseOrderBtn" class="btn-secondary" style="margin-right:8px;" title="反转当前页顺序" onclick="reverseHistoryOrder()">🔃 反转顺序</button>
+        <button id="historyBackBtn" class="btn-ghost">← 返回</button>
+      </div>
+    </div>
+    <div id="historyList" class="history-list"></div>
+    <div id="historyPagination" class="history-pagination"></div>
+  </section>
+
+  <section id="historyDetailSection" class="result-section" style="display:none;">
+    <div class="history-header">
+      <div class="history-title-row">
+        <h2 id="historyDetailTitle"></h2>
+        <button id="editTitleBtn" class="history-edit-btn" title="编辑标题" onclick="startEditTitle()">✏️</button>
+      </div>
+      <button id="historyDetailBackBtn" class="btn-ghost">← 返回列表</button>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-tab="hpreview">👁️ 预览</button>
+      <button class="tab" data-tab="hsource">📝 Markdown 源码</button>
+    </div>
+    <div id="hpreviewPanel" class="tab-panel active"><div id="historyMarkdownPreview" class="markdown-body"></div></div>
+    <div id="hsourcePanel" class="tab-panel"><textarea id="historyMarkdownSource" readonly></textarea></div>
+    <div class="action-bar">
+      <button id="historyDownloadBtn" class="btn-primary">💾 下载 .md 文件</button>
+      <button id="historyCopyBtn" class="btn-secondary">📋 复制 Markdown</button>
+      <button id="historyDeleteBtn" class="btn-danger">🗑 删除此记录</button>
+    </div>
+  </section>
+</div>
+
+<script>
+// ── DOM ─────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const videoUrl = $("videoUrl"), apiKey = $("apiKey"), startBtn = $("startBtn");
+const progressSection = $("progressSection"), progressMsg = $("progressMsg");
+const errorSection = $("errorSection"), errorMsg = $("errorMsg");
+const infoSection = $("infoSection"), videoTitle = $("videoTitle"), subtitleInfo = $("subtitleInfo");
+const resultSection = $("resultSection"), markdownPreview = $("markdownPreview"), markdownSource = $("markdownSource");
+const downloadBtn = $("downloadBtn"), copyBtn = $("copyBtn"), resetBtn = $("resetBtn");
+
+let currentMarkdown = "", currentTitle = "";
+
+// ── API Key 记忆 ───────────────────────────────────────
+const KEY_STORE = "bili_summary_api_key";
+const saved = localStorage.getItem(KEY_STORE);
+if (saved) apiKey.value = saved;
+apiKey.addEventListener("change", () => localStorage.setItem(KEY_STORE, apiKey.value.trim()));
+
+// ── 工具 ────────────────────────────────────────────────
+const show = el => el.style.display = "";
+const hide = el => el.style.display = "none";
+const setStep = (n, s) => $("step" + n).className = "step " + s;
+
+function showError(msg) {
+  show(errorSection);
+  errorMsg.textContent = "❌ " + msg;
+  errorSection.scrollIntoView({ behavior: "smooth" });
+}
+
+function showResult(md) {
+  show(resultSection);
+  markdownSource.value = md;
+  markdownPreview.innerHTML = typeof marked !== "undefined"
+    ? marked.parse(md, { breaks: true, gfm: true })
+    : "<pre>" + md.replace(/&/g,"&amp;").replace(/</g,"&lt;") + "</pre>";
+  resultSection.scrollIntoView({ behavior: "smooth" });
+}
+
+// ── 核心流程 ────────────────────────────────────────────
+startBtn.addEventListener("click", run);
+videoUrl.addEventListener("keydown", e => { if (e.key === "Enter") run(); });
+apiKey.addEventListener("keydown", e => { if (e.key === "Enter") run(); });
+
+async function run() {
+  const url = videoUrl.value.trim(), key = apiKey.value.trim();
+  if (!url) return showError("请输入 B站视频链接");
+  if (!key) return showError("请填写 DeepSeek API Key");
+
+  localStorage.setItem(KEY_STORE, key);
+  startBtn.disabled = true;
+  hide(errorSection); hide(infoSection); hide(resultSection);
+  show(progressSection);
+
+  try {
+    // 步骤 1: 获取字幕
+    setStep(1, "active"); setStep(2, ""); setStep(3, "");
+    progressMsg.textContent = "正在获取视频字幕（若无字幕将自动语音识别）...";
+
+    const s1 = await fetch("/api/fetch-subtitle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+      signal: AbortSignal.timeout(600_000), // 10min（含 Whisper 转录）
+    });
+    const d1 = await s1.json();
+    if (!d1.ok) throw new Error(d1.error);
+
+    setStep(1, "done");
+    currentTitle = d1.title;
+    show(infoSection);
+    videoTitle.textContent = d1.title;
+    subtitleInfo.textContent = `来源：${d1.method || d1.language} | ${d1.char_count.toLocaleString()} 字 ${d1.page_info || ""}`;
+
+    // 步骤 2: AI 总结
+    setStep(2, "active");
+    progressMsg.textContent = "DeepSeek AI 总结中...";
+
+    const s2 = await fetch("/api/summarize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: d1.text, title: d1.title, url, api_key: key, method: d1.method || "" }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    const d2 = await s2.json();
+    if (!d2.ok) throw new Error(d2.error);
+
+    setStep(2, "done"); setStep(3, "done");
+    progressMsg.textContent = "✅ 完成！";
+
+    currentMarkdown = d2.markdown;
+    showResult(d2.markdown);
+  } catch (e) {
+    if (e.name === "TimeoutError" || e.name === "AbortError") {
+      showError("请求超时，请重试");
+    } else {
+      showError(e.message);
+    }
+    setStep(1, "error"); setStep(2, "error"); setStep(3, "error");
+  } finally {
+    startBtn.disabled = false;
+  }
+}
+
+// ── 操作按钮 ────────────────────────────────────────────
+$("toggleKey").addEventListener("click", () => {
+  const isPw = apiKey.type === "password";
+  apiKey.type = isPw ? "text" : "password";
+  $("toggleKey").textContent = isPw ? "🙈" : "👁️";
+});
+
+document.querySelectorAll(".tab").forEach(t =>
+  t.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach(x => x.classList.remove("active"));
+    t.classList.add("active");
+    $(t.dataset.tab + "Panel").classList.add("active");
+  })
+);
+
+downloadBtn.addEventListener("click", async () => {
+  if (!currentMarkdown) return;
+  try {
+    const resp = await fetch("/api/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ markdown: currentMarkdown, title: currentTitle }),
+    });
+    if (!resp.ok) throw new Error("下载失败");
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = currentTitle.replace(/[\\/:*?"<>|]/g, "_") + ".md";
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    // 降级：直接下载 Blob
+    const blob = new Blob([currentMarkdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = currentTitle.replace(/[\\/:*?"<>|]/g, "_") + ".md";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+});
+
+copyBtn.addEventListener("click", () => {
+  if (!currentMarkdown) return;
+  navigator.clipboard.writeText(currentMarkdown).then(() => {
+    const orig = copyBtn.textContent;
+    copyBtn.textContent = "✅ 已复制！";
+    setTimeout(() => copyBtn.textContent = orig, 2000);
+  }).catch(() => {
+    // 降级方案
+    markdownSource.select();
+    document.execCommand("copy");
+    copyBtn.textContent = "✅ 已复制！";
+    setTimeout(() => copyBtn.textContent = "📋 复制 Markdown", 2000);
+  });
+});
+
+resetBtn.addEventListener("click", () => {
+  hide(resultSection); hide(infoSection); hide(errorSection); hide(progressSection);
+  hide(historySection); hide(historyDetailSection);
+  setStep(1, ""); setStep(2, ""); setStep(3, "");
+  currentMarkdown = ""; currentTitle = "";
+  videoUrl.focus();
+});
+
+// ── 历史记录 ────────────────────────────────────────────
+const historySection = $("historySection"), historyList = $("historyList");
+const historyPagination = $("historyPagination");
+const historyDetailSection = $("historyDetailSection");
+let historyPage = 1;
+
+$("historyBtn").addEventListener("click", () => {
+  hide(errorSection); hide(infoSection); hide(resultSection); hide(progressSection);
+  hide(historyDetailSection);
+  show(historySection);
+  loadHistory(1);
+});
+
+$("historyBackBtn").addEventListener("click", () => {
+  hide(historySection); hide(historyDetailSection);
+});
+
+$("historyDetailBackBtn").addEventListener("click", () => {
+  hide(historyDetailSection);
+  show(historySection);
+});
+
+async function loadHistory(page) {
+  historyPage = page;
+  try {
+    const resp = await fetch(`/api/history?page=${page}&per_page=15`);
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error);
+
+    if (!data.items.length) {
+      historyList.innerHTML = '<p class="history-empty">暂无历史记录，去总结一个视频吧 🎬</p>';
+      historyPagination.innerHTML = "";
+      return;
+    }
+
+    historyList.innerHTML = data.items.map((item, idx) => `
+      <div class="history-item" data-id="${item.id}" data-sort="${item.sort_order ?? 0}">
+        <div class="history-item-main" data-action="open">
+          <span class="history-item-title">${escHtml(item.short_title || item.title)}</span>
+          <span class="history-item-meta">${escHtml(item.method || "")} · ${(item.char_count || 0).toLocaleString()} 字 · ${item.created_at || ""}</span>
+        </div>
+        <div class="history-item-actions">
+          <button class="history-item-btn edit-title-btn" data-id="${item.id}" title="编辑标题">✏️</button>
+          <button class="history-item-btn move-up" data-id="${item.id}" title="上移" ${idx === 0 ? "disabled" : ""}>⬆</button>
+          <button class="history-item-btn move-down" data-id="${item.id}" title="下移" ${idx === data.items.length - 1 ? "disabled" : ""}>⬇</button>
+          <button class="history-item-btn danger" data-id="${item.id}" title="删除">🗑</button>
+        </div>
+      </div>
+    `).join("");
+
+    const totalPages = Math.ceil(data.total / 15);
+    let pageHtml = "";
+    if (totalPages > 1) {
+      pageHtml += `<button class="page-btn" ${page <= 1 ? "disabled" : ""}>«</button>`;
+      for (let p = 1; p <= totalPages; p++) {
+        pageHtml += `<button class="page-btn ${p === page ? "active" : ""}">${p}</button>`;
+      }
+      pageHtml += `<button class="page-btn" ${page >= totalPages ? "disabled" : ""}>»</button>`;
+    }
+    historyPagination.innerHTML = pageHtml;
+
+    // 事件委托：统一处理列表项上的所有点击
+    historyList.onclick = e => {
+      const btn = e.target.closest("button");
+      if (!btn) {
+        // 点击列表项主体 → 打开详情
+        const main = e.target.closest(".history-item-main");
+        if (main) {
+          const id = Number(main.closest(".history-item").dataset.id);
+          openHistoryDetail(id);
+        }
+        return;
+      }
+      // 编辑标题按钮
+      if (btn.classList.contains("edit-title-btn")) {
+        e.stopPropagation();
+        editTitleInline(Number(btn.dataset.id), btn.closest(".history-item"));
+        return;
+      }
+      // 删除按钮
+      if (btn.classList.contains("danger")) {
+        e.stopPropagation();
+        deleteHistoryFromList(Number(btn.dataset.id));
+        return;
+      }
+      // 上移/下移按钮
+      if (btn.classList.contains("move-up") || btn.classList.contains("move-down")) {
+        e.stopPropagation();
+        if (btn.disabled) return;
+        const id = Number(btn.dataset.id);
+        const items = [...historyList.querySelectorAll(".history-item")];
+        const idx = items.findIndex(el => Number(el.dataset.id) === id);
+        if (idx < 0) return;
+        if (btn.classList.contains("move-up") && idx > 0) {
+          [items[idx], items[idx - 1]] = [items[idx - 1], items[idx]];
+          submitSortOrders(items);
+        } else if (btn.classList.contains("move-down") && idx < items.length - 1) {
+          [items[idx], items[idx + 1]] = [items[idx + 1], items[idx]];
+          submitSortOrders(items);
+        }
+      }
+    };
+    historyPagination.querySelectorAll(".page-btn").forEach((btn, i) => {
+      if (btn.disabled) return;
+      btn.addEventListener("click", () => {
+        const p = i === 0 ? page - 1
+          : i === historyPagination.children.length - 1 ? page + 1
+          : Number(btn.textContent);
+        if (p >= 1 && p <= totalPages) loadHistory(p);
+      });
+    });
+  } catch (e) {
+    historyList.innerHTML = `<p class="history-error">加载失败: ${escHtml(e.message)}</p>`;
+  }
+}
+
+async function openHistoryDetail(id) {
+  try {
+    const resp = await fetch(`/api/history/${id}`);
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error);
+
+    hide(historySection);
+    show(historyDetailSection);
+    const displayTitle = data.short_title || data.title;
+    $("historyDetailTitle").textContent = displayTitle;
+
+    $("historyMarkdownSource").value = data.markdown;
+    $("historyMarkdownPreview").innerHTML = typeof marked !== "undefined"
+      ? marked.parse(data.markdown, { breaks: true, gfm: true })
+      : "<pre>" + escHtml(data.markdown) + "</pre>";
+
+    historyDetailSection.dataset.currentId = id;
+    historyDetailSection.dataset.currentTitle = displayTitle;
+    historyDetailSection.dataset.currentMarkdown = data.markdown;
+
+    // 重置 tab 状态
+    document.querySelectorAll("#historyDetailSection .tab").forEach(t => t.classList.remove("active"));
+    document.querySelector("#historyDetailSection .tab[data-tab='hpreview']").classList.add("active");
+    document.querySelectorAll("#historyDetailSection .tab-panel").forEach(p => p.classList.remove("active"));
+    $("hpreviewPanel").classList.add("active");
+
+    historyDetailSection.scrollIntoView({ behavior: "smooth" });
+  } catch (e) {
+    alert("加载失败: " + e.message);
+  }
+}
+
+// 历史详情 tab 切换
+document.querySelectorAll("#historyDetailSection .tab").forEach(t =>
+  t.addEventListener("click", () => {
+    document.querySelectorAll("#historyDetailSection .tab").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll("#historyDetailSection .tab-panel").forEach(x => x.classList.remove("active"));
+    t.classList.add("active");
+    $(t.dataset.tab + "Panel").classList.add("active");
+  })
+);
+
+$("historyDownloadBtn").addEventListener("click", () => {
+  const md = historyDetailSection.dataset.currentMarkdown;
+  const title = historyDetailSection.dataset.currentTitle;
+  if (!md) return;
+  const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = (title || "笔记").replace(/[\\/:*?"<>|]/g, "_") + ".md";
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+$("historyCopyBtn").addEventListener("click", () => {
+  const md = historyDetailSection.dataset.currentMarkdown;
+  if (!md) return;
+  navigator.clipboard.writeText(md).then(() => {
+    const orig = $("historyCopyBtn").textContent;
+    $("historyCopyBtn").textContent = "✅ 已复制！";
+    setTimeout(() => $("historyCopyBtn").textContent = orig, 2000);
+  }).catch(() => {
+    $("historyMarkdownSource").select();
+    document.execCommand("copy");
+    $("historyCopyBtn").textContent = "✅ 已复制！";
+    setTimeout(() => $("historyCopyBtn").textContent = "📋 复制 Markdown", 2000);
+  });
+});
+
+$("historyDeleteBtn").addEventListener("click", async () => {
+  const id = historyDetailSection.dataset.currentId;
+  if (!id || !confirm("确定删除这条历史记录？")) return;
+  try {
+    const resp = await fetch(`/api/history/${id}`, { method: "DELETE" });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error);
+    hide(historyDetailSection);
+    show(historySection);
+    loadHistory(historyPage);
+  } catch (e) {
+    alert("删除失败: " + e.message);
+  }
+});
+
+async function submitSortOrders(items) {
+  // 根据 DOM 顺序，将所有项 sort_order 设为序号
+  const orders = items.map((el, i) => ({
+    id: Number(el.dataset.id),
+    sort_order: i,
+  }));
+  try {
+    await fetch("/api/history/reorder", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orders }),
+    });
+    loadHistory(historyPage);
+  } catch (e) {
+    alert("排序失败: " + e.message);
+  }
+}
+
+async function deleteHistoryFromList(id) {
+  if (!confirm("确定删除这条历史记录？")) return;
+  try {
+    const resp = await fetch(`/api/history/${id}`, { method: "DELETE" });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error);
+    loadHistory(historyPage);
+  } catch (e) {
+    alert("删除失败: " + e.message);
+  }
+}
+
+// 列表内联编辑标题
+window.editTitleInline = function(id, itemEl) {
+  const titleSpan = itemEl.querySelector(".history-item-title");
+  if (!titleSpan) return;
+  const oldTitle = titleSpan.textContent;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = oldTitle;
+  input.className = "history-title-input";
+  input.style.cssText = "font-size:0.95rem;font-weight:600;padding:2px 6px;";
+  titleSpan.replaceWith(input);
+  input.focus();
+  input.select();
+
+  async function save() {
+    const newTitle = input.value.trim();
+    if (!newTitle || newTitle === oldTitle) {
+      input.replaceWith(titleSpan);
+      return;
+    }
+    try {
+      const resp = await fetch(`/api/history/${id}/title`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: newTitle }),
+      });
+      const d = await resp.json();
+      if (!d.ok) throw new Error(d.error);
+      titleSpan.textContent = newTitle;
+      input.replaceWith(titleSpan);
+    } catch (e) {
+      alert("保存失败: " + e.message);
+      input.replaceWith(titleSpan);
+    }
+  }
+
+  input.addEventListener("blur", save);
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") { input.blur(); }
+    if (e.key === "Escape") {
+      input.removeEventListener("blur", save);
+      input.replaceWith(titleSpan);
+    }
+  });
+};
+
+// 反转当前页顺序
+window.reverseHistoryOrder = async function() {
+  const items = [...historyList.querySelectorAll(".history-item")];
+  if (items.length < 2) return;
+  items.reverse();
+  await submitSortOrders(items);
+};
+
+// ── 标题编辑 ────────────────────────────────────────────
+window.startEditTitle = function() {
+  const h2 = $("historyDetailTitle");
+  if (!h2) return;
+  const oldTitle = h2.textContent;
+  // 替换为 input
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = oldTitle;
+  input.className = "history-title-input";
+  h2.replaceWith(input);
+  input.focus();
+  input.select();
+
+  async function save() {
+    const newTitle = input.value.trim();
+    if (!newTitle || newTitle === oldTitle) {
+      input.replaceWith(h2);
+      h2.textContent = oldTitle;
+      return;
+    }
+    const id = historyDetailSection.dataset.currentId;
+    if (!id) {
+      alert("缺少记录 ID");
+      input.replaceWith(h2);
+      return;
+    }
+    try {
+      const resp = await fetch(`/api/history/${id}/title`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: newTitle }),
+      });
+      const d = await resp.json();
+      if (!d.ok) throw new Error(d.error);
+      h2.textContent = newTitle;
+      input.replaceWith(h2);
+      historyDetailSection.dataset.currentTitle = newTitle;
+      historyDetailSection.dataset.currentMarkdown = d.markdown;
+      // 刷新预览
+      $("historyMarkdownSource").value = d.markdown;
+      $("historyMarkdownPreview").innerHTML = typeof marked !== "undefined"
+        ? marked.parse(d.markdown, { breaks: true, gfm: true })
+        : "<pre>" + escHtml(d.markdown) + "</pre>";
+    } catch (e) {
+      alert("保存失败: " + e.message);
+      input.replaceWith(h2);
+      h2.textContent = oldTitle;
+    }
+  }
+
+  input.addEventListener("blur", save);
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") { input.blur(); }
+    if (e.key === "Escape") {
+      input.removeEventListener("blur", save);
+      input.replaceWith(h2);
+      h2.textContent = oldTitle;
+    }
+  });
+};
+
+function escHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s || "";
+  return d.innerHTML;
+}
+
+videoUrl.focus();
+</script>
+</body>
+</html>
